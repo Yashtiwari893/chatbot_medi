@@ -11,7 +11,7 @@ import { supabase } from "./supabaseClient";
 import { embedText } from "./embeddings";
 import { retrieveRelevantChunksFromFiles } from "./retrieval";
 import { getFilesForPhoneNumber } from "./phoneMapping";
-import { sendWhatsAppMessage, sendWhatsAppDocument, sendWhatsAppDocumentAlt, formatMaterialLinkMessage, isGoogleDriveFile } from "./whatsappSender";
+import { sendWhatsAppMessage } from "./whatsappSender";
 import { validateSubjectRequest } from "./materialMatcher";
 import Groq from "groq-sdk";
 
@@ -450,47 +450,29 @@ ${linksInContext.length > 0
         response = stripInternalLeaks(response);
 
         // Guard: missing link auto-append (only for non-multi-version)
-        let pdfToSend: string | null = null;
+        let pdfUrl: string | null = null;
 
-        if (!multiVersionSubject) {
-            // Priority: Use raw links from context (database) first to avoid LLM character hallucinations
-            const ctxLinks = extractDriveLinks(contextText);
-            const responseLinks = extractDriveLinks(response);
+        if (!multiVersionSubject && fileIds.length > 0) {
+            // Query the first file's Supabase URL
+            const { data: fileData } = await supabase
+                .from("rag_files")
+                .select("supabase_storage_url, source_drive_link")
+                .eq("id", fileIds[0])
+                .single();
 
-            if (ctxLinks.length > 0) {
-                pdfToSend = ctxLinks[0];
-            } else if (responseLinks.length > 0) {
-                pdfToSend = responseLinks[0];
-            }
-
-            if (pdfToSend) {
-                const isFile = isGoogleDriveFile(pdfToSend);
-
-                if (isFile) {
-                    // Strip ALL Google Drive links from the response text
-                    response = response.replace(/https:\/\/drive\.google\.com\/[^\s]+/gi, '').trim();
-                    
-                    // Clean up any remaining text that looks like a raw template
-                    response = response.replace(/📚\s*Study Material Found/gi, '').trim();
-                    response = response.replace(/Subject:.*?👉/gi, '').trim();
-                    response = response.replace(/Aur kis subject me help chahiye\?/gi, '').trim();
-
-                    // If response is too empty after stripping, provide a simple fallback
-                    if (response.length < 5) {
-                        response = "Yeh lijiye aapka requested material! 😊";
-                    }
-                    console.log(`📄 PDF attachment prepared: ${pdfToSend}`);
-                } else {
-                    // It's a folder or unknown link - DO NOT strip it, DO NOT send as document
-                    console.log(`📂 Link is a folder/other, sending as text link instead: ${pdfToSend}`);
-                    pdfToSend = null; 
-                }
+            // Prefer Supabase URL (direct link), fall back to Drive link
+            if (fileData?.supabase_storage_url) {
+                pdfUrl = fileData.supabase_storage_url;
+                console.log(`📎 Using Supabase storage URL: ${pdfUrl}`);
+            } else if (fileData?.source_drive_link) {
+                pdfUrl = fileData.source_drive_link;
+                console.log(`📎 Using Drive link: ${pdfUrl}`);
             }
         }
 
         // ─── 12. Send + Store ────────────────────────────────────
 
-        return await sendAndStore(fromNumber, toNumber, response, messageId, auth_token, origin, pdfToSend);
+        return await sendAndStore(fromNumber, toNumber, response, messageId, auth_token, origin, pdfUrl);
 
     } catch (error) {
         console.error("❌ Auto-response error:", error);
@@ -512,49 +494,17 @@ async function sendAndStore(
     messageId: string,
     auth_token: string,
     origin: string,
-    pdfToSend?: string | null
+    pdfUrl?: string | null
 ): Promise<AutoResponseResult> {
 
-    const sendResult = await sendWhatsAppMessage(fromNumber, response, auth_token, origin);
-
-    if (sendResult.success && pdfToSend) {
-        try {
-            console.log(`📎 Attaching document to message...`);
-            let docResult = await sendWhatsAppDocument(fromNumber, pdfToSend, auth_token, origin);
-            
-            // If primary method fails, try alternative methods
-            if (!docResult.success) {
-                console.log(`ℹ️ Primary method failed, trying alternative approaches...`);
-                docResult = await sendWhatsAppDocumentAlt(fromNumber, pdfToSend, auth_token, origin);
-            }
-            
-            if (!docResult.success) {
-                console.error("⚠️ PDF delivery failed:", docResult.error);
-                // Get the direct download URL for the fallback
-                const fileId = pdfToSend.match(/\/d\/(.*?)\//)?.[1];
-                const downloadLink = fileId 
-                    ? `https://drive.google.com/uc?export=download&id=${fileId}`
-                    : pdfToSend;
-                    
-                await sendWhatsAppMessage(
-                    fromNumber,
-                    `Maaf kijiye, ye file direct link se download kar sakte hain:\n${downloadLink}`,
-                    auth_token,
-                    origin
-                );
-            } else {
-                console.log(`✅ Document sent successfully`);
-            }
-        } catch (err) {
-            console.error("Error in PDF delivery:", err);
-            const fileId = pdfToSend.match(/\/d\/(.*?)\//)?.[1];
-            const downloadLink = fileId 
-                ? `https://drive.google.com/uc?export=download&id=${fileId}`
-                : pdfToSend;
-            await sendWhatsAppMessage(fromNumber, `📥 Download Link: ${downloadLink}`, auth_token, origin);
-        }
+    // If we have a PDF URL, append it to the response
+    let messageToSend = response;
+    if (pdfUrl) {
+        messageToSend += `\n\n📥 Download: ${pdfUrl}`;
     }
-    
+
+    const sendResult = await sendWhatsAppMessage(fromNumber, messageToSend, auth_token, origin);
+
     if (!sendResult.success) {
         await supabase
             .from("whatsapp_messages")

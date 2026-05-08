@@ -52,6 +52,63 @@ export async function POST(req: Request) {
 
         fileId = fileRow.id as string;
 
+        // 1a) Upload PDF to Supabase Storage
+        console.log("📤 Uploading PDF to Supabase Storage...");
+        const fileExtension = pdfName.split('.').pop() || 'pdf';
+        const storagePath = `pdfs/${fileId}_${Date.now()}.${fileExtension}`;
+        
+        // Ensure bucket exists
+        const { data: buckets } = await supabase.storage.listBuckets();
+        const bucketExists = buckets?.some(b => b.name === 'pdfs');
+        
+        if (!bucketExists) {
+            console.log("📁 Creating 'pdfs' bucket in Supabase Storage...");
+            try {
+                await supabase.storage.createBucket('pdfs', { 
+                    public: true,
+                    allowedMimeTypes: ['application/pdf']
+                });
+                console.log("✅ Bucket created");
+            } catch (bucketErr: unknown) {
+                const errMsg = bucketErr instanceof Error ? bucketErr.message : String(bucketErr);
+                if (!errMsg.includes('already exists')) {
+                    console.warn("⚠️ Could not create bucket:", errMsg);
+                }
+            }
+        }
+        
+        const { data: uploadData, error: uploadError } = await supabase.storage
+            .from('pdfs')
+            .upload(storagePath, new Uint8Array(buffer), {
+                contentType: 'application/pdf',
+                upsert: false,
+            });
+
+        let supabaseFileUrl = null;
+        if (uploadError) {
+            console.warn("⚠️ Could not upload to Supabase Storage:", uploadError.message);
+        } else {
+            console.log(`✅ File uploaded to: ${storagePath}`);
+            // Get public URL
+            const { data: { publicUrl } } = supabase.storage
+                .from('pdfs')
+                .getPublicUrl(storagePath);
+            supabaseFileUrl = publicUrl;
+            console.log(`📎 Public URL: ${supabaseFileUrl}`);
+            
+            // Store URL in database
+            const { error: urlError } = await supabase
+                .from("rag_files")
+                .update({
+                    supabase_storage_url: supabaseFileUrl,
+                })
+                .eq("id", fileId);
+
+            if (urlError) {
+                console.warn("⚠️ Could not store Supabase URL:", urlError);
+            }
+        }
+
         // 2) Extract text + chunk
         const text = await extractPdfText(buffer);
         const chunks = chunkText(text, 1500).filter((c) => c.trim().length > 0);
