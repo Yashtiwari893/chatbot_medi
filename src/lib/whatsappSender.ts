@@ -98,6 +98,7 @@ export async function sendWhatsAppMessage(
 
 /**
  * Send a PDF document via WhatsApp using 11za.in API
+ * Using direct download URL (works with 11za's myfile parameter)
  */
 export async function sendWhatsAppDocument(
     phoneNumber: string,
@@ -113,17 +114,20 @@ export async function sendWhatsAppDocument(
             };
         }
 
+        // Ensure we have a direct download URL
+        const downloadUrl = convertGoogleDriveToDirectDownload(documentUrl);
+
         const payload = {
             sendto: phoneNumber,
             authToken: authToken,
             originWebsite: originWebsite.trim(),
             originWebsites: originWebsite.trim(),
             contentType: "document",
-            myfile: convertGoogleDriveToDirectDownload(documentUrl),
+            myfile: downloadUrl,
         };
 
-        console.log(`Sending WhatsApp PDF document to ${phoneNumber}...`);
-        console.log("Document URL being sent:", convertGoogleDriveToDirectDownload(documentUrl));
+        console.log(`📄 Sending WhatsApp PDF document to ${phoneNumber}...`);
+        console.log(`   URL: ${downloadUrl.substring(0, 80)}...`);
 
         const response = await fetch(WHATSAPP_API_URL, {
             method: "POST",
@@ -136,14 +140,15 @@ export async function sendWhatsAppDocument(
         const data = await response.json();
 
         if (!response.ok) {
-            console.error("WhatsApp Document API error:", data);
+            console.error("❌ WhatsApp Document API error:", data);
             return {
                 success: false,
                 error: `WhatsApp API returned ${response.status}`,
                 response: data,
             };
         }
-        console.log("11za document response:", data);
+        
+        console.log("✅ 11za document sent successfully");
         return {
             success: true,
             response: data,
@@ -158,12 +163,12 @@ export async function sendWhatsAppDocument(
 }
 
 /**
- * Send a PDF document via WhatsApp using 11za File ID (uploaded file reference)
- * This is preferred over Drive URLs as 11za hosts the file directly
+ * Send a PDF document directly using a Supabase storage URL
+ * This is the preferred method for uploaded files
  */
-export async function sendWhatsAppDocument11zaFileId(
+export async function sendWhatsAppDocumentFromUrl(
     phoneNumber: string,
-    elevenZaFileId: string,
+    fileUrl: string,
     authToken: string,
     originWebsite: string
 ): Promise<SendMessageResult> {
@@ -175,16 +180,18 @@ export async function sendWhatsAppDocument11zaFileId(
             };
         }
 
+        // Ensure URL is accessible (add auth params if needed)
         const payload = {
             sendto: phoneNumber,
             authToken: authToken,
             originWebsite: originWebsite.trim(),
             originWebsites: originWebsite.trim(),
             contentType: "document",
-            media_id: elevenZaFileId,  // 11za file ID
+            myfile: fileUrl,
         };
 
-        console.log(`Sending 11za file ${elevenZaFileId} to ${phoneNumber}...`);
+        console.log(`📤 Sending PDF from URL to ${phoneNumber}...`);
+        console.log(`   URL: ${fileUrl.substring(0, 80)}...`);
 
         const response = await fetch(WHATSAPP_API_URL, {
             method: "POST",
@@ -197,20 +204,21 @@ export async function sendWhatsAppDocument11zaFileId(
         const data = await response.json();
 
         if (!response.ok) {
-            console.error("WhatsApp 11za File API error:", data);
+            console.error("❌ 11za URL send error:", data);
             return {
                 success: false,
-                error: `WhatsApp API returned ${response.status}`,
+                error: `11za API returned ${response.status}`,
                 response: data,
             };
         }
-        console.log("11za file send response:", data);
+        
+        console.log("✅ PDF sent successfully via URL");
         return {
             success: true,
             response: data,
         };
     } catch (error) {
-        console.error("Error sending 11za file via WhatsApp:", error);
+        console.error("Error sending document URL:", error);
         return {
             success: false,
             error: error instanceof Error ? error.message : "Unknown error",

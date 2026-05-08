@@ -3,7 +3,7 @@ import { extractPdfText } from "@/lib/pdf";
 import { chunkText } from "@/lib/chunk";
 import { embedText } from "@/lib/embeddings";
 import { supabase } from "@/lib/supabaseClient";
-import { extractGoogleDriveLinks, processDriveLinkTo11za } from "@/lib/11zaFileUpload";
+import { extractGoogleDriveLinks } from "@/lib/11zaFileUpload";
 
 export const runtime = "nodejs";
 
@@ -63,56 +63,19 @@ export async function POST(req: Request) {
         // 2a) Extract Drive links from PDF content
         console.log("🔍 Extracting Google Drive links from PDF...");
         const driveLinks = extractGoogleDriveLinks(text);
-        console.log(`Found ${driveLinks.length} Drive link(s)`);
-
-        // Keep track of Drive link → 11za file ID mapping
-        const driveToElevenZaMap = new Map<string, string>();
-
-        // 2b) Upload unique Drive links to 11za
+        console.log(`✅ Found ${driveLinks.length} Drive link(s) in PDF`);
+        
+        // Store the first Drive link as source reference
         if (driveLinks.length > 0) {
-            const uniqueLinks = [...new Set(driveLinks)]; // Remove duplicates
-            console.log(`📤 Uploading ${uniqueLinks.length} unique file(s) to 11za...`);
+            const { error: updateError } = await supabase
+                .from("rag_files")
+                .update({
+                    source_drive_link: driveLinks[0],
+                })
+                .eq("id", fileId);
 
-            for (const driveLink of uniqueLinks) {
-                try {
-                    // Extract filename from link or use a generic name
-                    const fileNameMatch = driveLink.match(/\/d\/([a-zA-Z0-9_-]+)/);
-                    const fileName = fileNameMatch ? `${pdfName.split('.')[0]}_${fileNameMatch[1].slice(0, 8)}.pdf` : `${pdfName}`;
-
-                    const uploadResult = await processDriveLinkTo11za(
-                        driveLink,
-                        fileName,
-                        authToken,
-                        origin
-                    );
-
-                    if (uploadResult.success && uploadResult.fileId) {
-                        driveToElevenZaMap.set(driveLink, uploadResult.fileId);
-                        console.log(`✅ Mapped ${driveLink.slice(0, 50)}... → ${uploadResult.fileId}`);
-                    } else {
-                        console.warn(`⚠️ Failed to upload ${driveLink}: ${uploadResult.error}`);
-                    }
-                } catch (err) {
-                    console.error(`❌ Error uploading Drive link: ${err}`);
-                }
-            }
-
-            // Update file record with primary 11za file ID
-            if (driveToElevenZaMap.size > 0) {
-                const firstElevenZaId = Array.from(driveToElevenZaMap.values())[0];
-                const firstDriveLink = Array.from(driveToElevenZaMap.keys())[0];
-
-                const { error: updateError } = await supabase
-                    .from("rag_files")
-                    .update({
-                        elevenza_file_id: firstElevenZaId,
-                        source_drive_link: firstDriveLink,
-                    })
-                    .eq("id", fileId);
-
-                if (updateError) {
-                    console.warn("Failed to update file with 11za ID:", updateError);
-                }
+            if (updateError) {
+                console.warn("⚠️ Could not store Drive link reference:", updateError);
             }
         }
 
@@ -194,8 +157,6 @@ export async function POST(req: Request) {
             chunks: chunks.length,
             phone_numbers_mapped: phoneNumberList.length,
             drive_links_found: driveLinks.length,
-            elevenza_files_uploaded: driveToElevenZaMap.size,
-            elevenza_mapping: Object.fromEntries(driveToElevenZaMap),
         });
     } catch (err: unknown) {
         console.error("PROCESS_PDF_ERROR:", err);

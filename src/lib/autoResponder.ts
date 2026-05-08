@@ -11,7 +11,7 @@ import { supabase } from "./supabaseClient";
 import { embedText } from "./embeddings";
 import { retrieveRelevantChunksFromFiles } from "./retrieval";
 import { getFilesForPhoneNumber } from "./phoneMapping";
-import { sendWhatsAppMessage, sendWhatsAppDocument, sendWhatsAppDocument11zaFileId, formatMaterialLinkMessage, isGoogleDriveFile } from "./whatsappSender";
+import { sendWhatsAppMessage, sendWhatsAppDocument, formatMaterialLinkMessage, isGoogleDriveFile } from "./whatsappSender";
 import { validateSubjectRequest } from "./materialMatcher";
 import Groq from "groq-sdk";
 
@@ -519,45 +519,26 @@ async function sendAndStore(
 
     if (sendResult.success && pdfToSend) {
         try {
-            // Check if we have a 11za file ID for this Drive link
-            let elevenZaFileId: string | null = null;
-
-            // Query the database to find 11za file ID mapping
-            const { data: fileMapping } = await supabase
-                .from("rag_files")
-                .select("elevenza_file_id")
-                .eq("source_drive_link", pdfToSend)
-                .single();
-
-            if (fileMapping?.elevenza_file_id) {
-                elevenZaFileId = fileMapping.elevenza_file_id;
-                console.log(`✅ Found 11za file ID: ${elevenZaFileId}`);
-            }
-
-            // Prefer 11za file ID if available, otherwise fall back to Drive URL
-            let docResult;
-            if (elevenZaFileId) {
-                console.log(`📤 Sending via 11za file ID (preferred)...`);
-                docResult = await sendWhatsAppDocument11zaFileId(fromNumber, elevenZaFileId, auth_token, origin);
-            } else {
-                console.log(`📤 Sending via Drive URL (fallback)...`);
-                docResult = await sendWhatsAppDocument(fromNumber, pdfToSend, auth_token, origin);
-            }
-
+            console.log(`📎 Attaching document to message...`);
+            const docResult = await sendWhatsAppDocument(fromNumber, pdfToSend, auth_token, origin);
+            
             if (!docResult.success) {
-                console.error("PDF delivery failed, sending fallback link:", docResult.error);
+                console.error("⚠️ PDF delivery failed:", docResult.error);
                 await sendWhatsAppMessage(
                     fromNumber,
-                    `Maaf kijiye, ye file attach karne mein thodi problem aa rahi hai. Aap yahan se direct download kar sakte hain: ${pdfToSend}`,
+                    `Maaf kijiye, ye file direct link se download kar sakte hain:\n${pdfToSend}`,
                     auth_token,
                     origin
                 );
+            } else {
+                console.log(`✅ Document sent successfully`);
             }
         } catch (err) {
             console.error("Error in PDF delivery:", err);
-            await sendWhatsAppMessage(fromNumber, `Download Link: ${pdfToSend}`, auth_token, origin);
+            await sendWhatsAppMessage(fromNumber, `📥 Download Link: ${pdfToSend}`, auth_token, origin);
         }
     }
+    
     if (!sendResult.success) {
         await supabase
             .from("whatsapp_messages")
