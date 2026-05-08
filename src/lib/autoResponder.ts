@@ -11,7 +11,7 @@ import { supabase } from "./supabaseClient";
 import { embedText } from "./embeddings";
 import { retrieveRelevantChunksFromFiles } from "./retrieval";
 import { getFilesForPhoneNumber } from "./phoneMapping";
-import { sendWhatsAppMessage, sendWhatsAppDocument, formatMaterialLinkMessage, isGoogleDriveFile } from "./whatsappSender";
+import { sendWhatsAppMessage, sendWhatsAppDocument, sendWhatsAppDocumentAlt, formatMaterialLinkMessage, isGoogleDriveFile } from "./whatsappSender";
 import { validateSubjectRequest } from "./materialMatcher";
 import Groq from "groq-sdk";
 
@@ -520,13 +520,25 @@ async function sendAndStore(
     if (sendResult.success && pdfToSend) {
         try {
             console.log(`📎 Attaching document to message...`);
-            const docResult = await sendWhatsAppDocument(fromNumber, pdfToSend, auth_token, origin);
+            let docResult = await sendWhatsAppDocument(fromNumber, pdfToSend, auth_token, origin);
+            
+            // If primary method fails, try alternative methods
+            if (!docResult.success) {
+                console.log(`ℹ️ Primary method failed, trying alternative approaches...`);
+                docResult = await sendWhatsAppDocumentAlt(fromNumber, pdfToSend, auth_token, origin);
+            }
             
             if (!docResult.success) {
                 console.error("⚠️ PDF delivery failed:", docResult.error);
+                // Get the direct download URL for the fallback
+                const fileId = pdfToSend.match(/\/d\/(.*?)\//)?.[1];
+                const downloadLink = fileId 
+                    ? `https://drive.google.com/uc?export=download&id=${fileId}`
+                    : pdfToSend;
+                    
                 await sendWhatsAppMessage(
                     fromNumber,
-                    `Maaf kijiye, ye file direct link se download kar sakte hain:\n${pdfToSend}`,
+                    `Maaf kijiye, ye file direct link se download kar sakte hain:\n${downloadLink}`,
                     auth_token,
                     origin
                 );
@@ -535,7 +547,11 @@ async function sendAndStore(
             }
         } catch (err) {
             console.error("Error in PDF delivery:", err);
-            await sendWhatsAppMessage(fromNumber, `📥 Download Link: ${pdfToSend}`, auth_token, origin);
+            const fileId = pdfToSend.match(/\/d\/(.*?)\//)?.[1];
+            const downloadLink = fileId 
+                ? `https://drive.google.com/uc?export=download&id=${fileId}`
+                : pdfToSend;
+            await sendWhatsAppMessage(fromNumber, `📥 Download Link: ${downloadLink}`, auth_token, origin);
         }
     }
     

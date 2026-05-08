@@ -23,8 +23,14 @@ export function formatMaterialLinkMessage(subject: string): string {
  */
 function convertGoogleDriveToDirectDownload(link: string): string {
     const match = link.match(/\/d\/(.*?)\//);
-    if (!match) return link;
-    return `https://drive.google.com/uc?export=download&id=${match[1]}`;
+    if (!match) {
+        console.log(`⚠️ Could not extract file ID from: ${link}`);
+        return link;
+    }
+    const fileId = match[1];
+    const converted = `https://drive.google.com/uc?export=download&id=${fileId}`;
+    console.log(`✓ Drive link conversion: ${fileId} => ${converted}`);
+    return converted;
 }
 
 /**
@@ -127,7 +133,8 @@ export async function sendWhatsAppDocument(
         };
 
         console.log(`📄 Sending WhatsApp PDF document to ${phoneNumber}...`);
-        console.log(`   URL: ${downloadUrl.substring(0, 80)}...`);
+        console.log(`   Original URL: ${documentUrl}`);
+        console.log(`   Converted URL: ${downloadUrl}`);
 
         const response = await fetch(WHATSAPP_API_URL, {
             method: "POST",
@@ -137,24 +144,108 @@ export async function sendWhatsAppDocument(
             body: JSON.stringify(payload),
         });
 
+        console.log(`   HTTP Status: ${response.status}`);
         const data = await response.json();
+        console.log(`   11za Response:`, JSON.stringify(data, null, 2));
 
-        if (!response.ok) {
+        // Check if response indicates success (might return 200 with error in body)
+        if (!response.ok || data.status === "error" || data.status === 0) {
             console.error("❌ WhatsApp Document API error:", data);
             return {
                 success: false,
-                error: `WhatsApp API returned ${response.status}`,
+                error: `11za returned: ${data.message || data.error || JSON.stringify(data)}`,
                 response: data,
             };
         }
         
-        console.log("✅ 11za document sent successfully");
+        console.log("✅ 11za document sent successfully:", data);
         return {
             success: true,
             response: data,
         };
     } catch (error) {
-        console.error("Error sending WhatsApp document:", error);
+        console.error("❌ Error sending WhatsApp document:", error);
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown error",
+        };
+    }
+}
+
+/**
+ * Try alternative 11za document sending methods
+ * Tests different parameter names and structures
+ */
+export async function sendWhatsAppDocumentAlt(
+    phoneNumber: string,
+    documentUrl: string,
+    authToken: string,
+    originWebsite: string
+): Promise<SendMessageResult> {
+    try {
+        const downloadUrl = convertGoogleDriveToDirectDownload(documentUrl);
+        
+        // Try different payload structures
+        const payloads = [
+            {
+                name: "document param",
+                payload: {
+                    sendto: phoneNumber,
+                    authToken: authToken,
+                    originWebsite: originWebsite.trim(),
+                    contentType: "document",
+                    document: downloadUrl,
+                }
+            },
+            {
+                name: "file param",
+                payload: {
+                    sendto: phoneNumber,
+                    authToken: authToken,
+                    originWebsite: originWebsite.trim(),
+                    contentType: "document",
+                    file: downloadUrl,
+                }
+            },
+            {
+                name: "myfile with caption",
+                payload: {
+                    sendto: phoneNumber,
+                    authToken: authToken,
+                    originWebsite: originWebsite.trim(),
+                    contentType: "document",
+                    myfile: downloadUrl,
+                    caption: "Study Material",
+                }
+            },
+        ];
+
+        for (const { name, payload } of payloads) {
+            console.log(`\n🔄 Trying ${name}...`);
+            try {
+                const response = await fetch(WHATSAPP_API_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+
+                const data = await response.json();
+                console.log(`   Status: ${response.status}, Response:`, data);
+
+                if (response.ok && data.status !== "error" && data.status !== 0) {
+                    console.log(`✅ Success with ${name}!`);
+                    return { success: true, response: data };
+                }
+            } catch (err) {
+                console.log(`   ${name} failed:`, err instanceof Error ? err.message : err);
+            }
+        }
+
+        return {
+            success: false,
+            error: "All alternative methods failed",
+        };
+    } catch (error) {
         return {
             success: false,
             error: error instanceof Error ? error.message : "Unknown error",
