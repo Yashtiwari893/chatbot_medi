@@ -158,6 +158,67 @@ export async function sendWhatsAppDocument(
 }
 
 /**
+ * Send a PDF document via WhatsApp using 11za File ID (uploaded file reference)
+ * This is preferred over Drive URLs as 11za hosts the file directly
+ */
+export async function sendWhatsAppDocument11zaFileId(
+    phoneNumber: string,
+    elevenZaFileId: string,
+    authToken: string,
+    originWebsite: string
+): Promise<SendMessageResult> {
+    try {
+        if (!authToken || !originWebsite) {
+            return {
+                success: false,
+                error: "WhatsApp API credentials not provided",
+            };
+        }
+
+        const payload = {
+            sendto: phoneNumber,
+            authToken: authToken,
+            originWebsite: originWebsite.trim(),
+            originWebsites: originWebsite.trim(),
+            contentType: "document",
+            media_id: elevenZaFileId,  // 11za file ID
+        };
+
+        console.log(`Sending 11za file ${elevenZaFileId} to ${phoneNumber}...`);
+
+        const response = await fetch(WHATSAPP_API_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error("WhatsApp 11za File API error:", data);
+            return {
+                success: false,
+                error: `WhatsApp API returned ${response.status}`,
+                response: data,
+            };
+        }
+        console.log("11za file send response:", data);
+        return {
+            success: true,
+            response: data,
+        };
+    } catch (error) {
+        console.error("Error sending 11za file via WhatsApp:", error);
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown error",
+        };
+    }
+}
+
+/**
  * Send a template message via WhatsApp using 11za.in API
  */
 export async function sendWhatsAppTemplate(
