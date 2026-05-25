@@ -11,7 +11,7 @@ import { supabase } from "./supabaseClient";
 import { embedText } from "./embeddings";
 import { retrieveRelevantChunksFromFiles } from "./retrieval";
 import { getFilesForPhoneNumber } from "./phoneMapping";
-import { sendWhatsAppMessage } from "./whatsappSender";
+import { sendWhatsAppMessage, sendWhatsAppDocumentFromUrl } from "./whatsappSender";
 import { validateSubjectRequest } from "./materialMatcher";
 import Groq from "groq-sdk";
 
@@ -113,6 +113,28 @@ function extractDriveLinks(text: string): string[] {
     // Matches common Google Drive file and folder patterns
     const regex = /https:\/\/drive\.google\.com\/(?:file\/d\/|drive\/folders\/|open\?id=)([A-Za-z0-9_-]+)[^\s]*/gi;
     return text.match(regex) || [];
+}
+
+function extractUrls(text: string): string[] {
+    const matches = text.match(/https?:\/\/[^\s)\]}>"]+/gi) || [];
+    return matches.map((u) => u.replace(/[.,;!?]+$/, ""));
+}
+
+function pickDocumentUrl(urls: string[]): string | null {
+    if (urls.length === 0) return null;
+
+    const score = (url: string): number => {
+        const lower = url.toLowerCase();
+        let s = 0;
+        if (lower.endsWith(".pdf") || lower.includes(".pdf?")) s += 50;
+        if (lower.includes("11za.in") && lower.includes("fileuploader")) s += 40;
+        if (lower.includes("11za.in")) s += 20;
+        if (lower.includes("drive.google.com/file/d/") || lower.includes("drive.google.com/uc")) s += 10;
+        return s;
+    };
+
+    const sorted = [...urls].sort((a, b) => score(b) - score(a));
+    return score(sorted[0]) > 0 ? sorted[0] : null;
 }
 
 /**
@@ -453,20 +475,36 @@ ${linksInContext.length > 0
         let pdfUrl: string | null = null;
 
         if (!multiVersionSubject && fileIds.length > 0) {
-            // Query the first file's Supabase URL
-            const { data: fileData } = await supabase
-                .from("rag_files")
-                .select("supabase_storage_url, source_drive_link")
-                .eq("id", fileIds[0])
-                .single();
+            // First preference: any usable document URL from retrieval context/response (e.g. 11za uploader URL)
+            const contextUrls = extractUrls(contextText);
+            const responseUrls = extractUrls(response);
+            pdfUrl = pickDocumentUrl([...contextUrls, ...responseUrls]);
 
-            // Prefer Supabase URL (direct link), fall back to Drive link
-            if (fileData?.supabase_storage_url) {
-                pdfUrl = fileData.supabase_storage_url;
-                console.log(`📎 Using Supabase storage URL: ${pdfUrl}`);
-            } else if (fileData?.source_drive_link) {
-                pdfUrl = fileData.source_drive_link;
-                console.log(`📎 Using Drive link: ${pdfUrl}`);
+            if (!pdfUrl) {
+                // Fallback to DB-stored URLs
+                const { data: fileData } = await supabase
+                    .from("rag_files")
+                    .select("supabase_storage_url, source_drive_link")
+                    .eq("id", fileIds[0])
+                    .single();
+
+                if (fileData?.supabase_storage_url) {
+                    pdfUrl = fileData.supabase_storage_url;
+                    console.log(`📎 Using Supabase storage URL: ${pdfUrl}`);
+                } else if (fileData?.source_drive_link) {
+                    pdfUrl = fileData.source_drive_link;
+                    console.log(`📎 Using Drive link: ${pdfUrl}`);
+                }
+            } else {
+                console.log(`📎 Using detected document URL: ${pdfUrl}`);
+            }
+
+            // Prevent duplicate URL text in assistant message when document is attached separately
+            if (pdfUrl) {
+                response = response.replace(/https?:\/\/[^\s)\]}>"]+/gi, "").replace(/\n{3,}/g, "\n\n").trim();
+                if (response.length < 5) {
+                    response = "Yeh lijiye aapka requested material! 😊";
+                }
             }
         }
 
@@ -496,14 +534,7 @@ async function sendAndStore(
     origin: string,
     pdfUrl?: string | null
 ): Promise<AutoResponseResult> {
-
-    // If we have a PDF URL, append it to the response
-    let messageToSend = response;
-    if (pdfUrl) {
-        messageToSend += `\n\n📥 Download: ${pdfUrl}`;
-    }
-
-    const sendResult = await sendWhatsAppMessage(fromNumber, messageToSend, auth_token, origin);
+    const sendResult = await sendWhatsAppMessage(fromNumber, response, auth_token, origin);
 
     if (!sendResult.success) {
         await supabase
@@ -511,6 +542,17 @@ async function sendAndStore(
             .update({ auto_respond_sent: false, response_sent_at: new Date().toISOString() })
             .eq("message_id", messageId);
         return { success: false, response, sent: false, error: `Send failed: ${sendResult.error}` };
+    }
+
+    if (pdfUrl) {
+        console.log(`📎 Sending document attachment from URL...`);
+        const docResult = await sendWhatsAppDocumentFromUrl(fromNumber, pdfUrl, auth_token, origin);
+        if (!docResult.success) {
+            console.warn("⚠️ Document send failed, falling back to text URL:", docResult.error);
+            await sendWhatsAppMessage(fromNumber, `📥 Download: ${pdfUrl}`, auth_token, origin);
+        } else {
+            console.log("✅ Document attachment sent successfully");
+        }
     }
 
     const responseMessageId = `auto_${messageId}_${Date.now()}`;

@@ -294,11 +294,18 @@ export async function sendWhatsAppDocumentFromUrl(
 
         const data = await response.json();
 
-        if (!response.ok) {
+        const apiSuccess = Boolean(
+            data?.IsSuccess === true ||
+            data?.isSuccess === true ||
+            data?.Status === 200 ||
+            data?.status === 200
+        );
+
+        if (!response.ok || !apiSuccess) {
             console.error("❌ 11za URL send error:", data);
             return {
                 success: false,
-                error: `11za API returned ${response.status}`,
+                error: data?.Message || data?.message || `11za API returned ${response.status}`,
                 response: data,
             };
         }
